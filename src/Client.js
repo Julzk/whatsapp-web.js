@@ -866,10 +866,99 @@ class Client extends EventEmitter {
      *  @returns {Promise<boolean>} result
      *
      */
-    async sendSeen(chatId) {
+    async sendSeen_(chatId) {
         return await this.pupPage.evaluate(async (chatId) => {
             return window.WWebJS.sendSeen(chatId);
         }, chatId);
+    }
+
+    async sendSeen(chatId) {
+        const result = await this.pupPage.evaluate(async (chatId) => {
+            try {
+                // Get the chat
+                const chat = window.Store.Chat.get(chatId);
+                if (!chat) {
+                    return false;
+                }
+
+                // Check stream availability with correct properties
+                const streamAvailable = window.Store.Stream ?
+                    (window.Store.Stream.available !== false) :
+                    (window.Store.Conn && window.Store.Conn.state === 'CONNECTED');
+
+                if (!streamAvailable) {
+                    console.warn('Stream not available, attempting fallback sendSeen');
+                    // Fallback: try basic seen operation only
+                    try {
+                        return await window.WWebJS.sendSeen(chatId);
+                    } catch (fallbackError) {
+                        console.error('Fallback sendSeen failed:', fallbackError);
+                        return false;
+                    }
+                }
+
+                // Implement dual pattern discovered in obfuscated code analysis
+                // Execute sendSeen and sendReceipt in parallel using Promise.all
+                const parallelOperations = [];
+
+                // 1. Read confirmation (seen) - using existing function
+                parallelOperations.push(
+                    window.WWebJS.sendSeen(chatId)
+                );
+
+                // 2. Delivery confirmation (receipt) - implementing missing part
+                if (window.Store.SendReceipt && window.Store.SendReceipt.sendAggregateReceipts) {
+                    // Use WAWebSendReceiptJobCommon module found in analysis
+                    parallelOperations.push(
+                        window.Store.SendReceipt.sendAggregateReceipts({
+                            type: window.Store.SendReceipt.RECEIPT_TYPE?.READ || 'read',
+                            chatId: chatId
+                        }).catch(err => {
+                            console.warn('SendReceipt operation failed:', err);
+                            return true; // Don't fail if only receipt fails
+                        })
+                    );
+                } else if (window.Store.MessageReceiptBatcher && window.Store.MessageReceiptBatcher.receiptBatcher) {
+                    // Fallback using MessageReceiptBatcher found in module.js
+                    parallelOperations.push(
+                        Promise.resolve().then(() => {
+                            try {
+                                return window.Store.MessageReceiptBatcher.receiptBatcher.acceptOtherReceipt({
+                                    chatId: chatId,
+                                    type: 'read'
+                                });
+                            } catch (err) {
+                                console.warn('MessageReceiptBatcher operation failed:', err);
+                                return true; // Don't fail if only receipt fails
+                            }
+                        })
+                    );
+                }
+
+                // Execute both operations in parallel (obfuscated code pattern)
+                if (parallelOperations.length > 1) {
+                    await Promise.all(parallelOperations);
+                } else {
+                    // Fallback: only execute sendSeen if no receipt available
+                    await parallelOperations[0];
+                }
+
+                return true;
+
+            } catch (error) {
+                console.error('Error in dual sendSeen operation:', error);
+
+                // Fallback: try basic seen operation in case of error
+                try {
+                    return await window.WWebJS.sendSeen(chatId);
+                } catch (fallbackError) {
+                    console.error('Fallback sendSeen also failed:', fallbackError);
+                    return false;
+                }
+            }
+        }, chatId);
+
+        return result;
     }
 
     /**
